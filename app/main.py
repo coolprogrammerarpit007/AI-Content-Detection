@@ -1,55 +1,42 @@
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from .schemas import SubmitRequest
-from .database import SessionLocal
-from .models import AIDetection
-from .copyleaks_service import copyleaks_service
-from .logger import logger
+import uvicorn
+from fastapi import FastAPI, Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+from app.routes import ai_content
+from app.core.database import Base, engine
+from app.core.logger import logger
+
 
 app = FastAPI(title="AI Content Detection API")
 
-
-def response(status: bool, msg: str, data=None):
-    return JSONResponse({
-        "status": status,
-        "msg": msg,
-        "data": data
-    })
+# Rate limits: 10 requests/min
+limiter = Limiter(key_func=get_remote_address, default_limits=["10/minute"])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
-@app.post("/api/v1/ai-detect")
-def detect_ai(payload: SubmitRequest):
-    text = payload.text.strip()
+# Include Routes
+app.include_router(ai_content.router, prefix="/api", tags=["AI Content"])
 
-    # 🔥 Validate text length (at least 25 words)
-    if len(text.split()) < 25:
-        logger.error("Validation failed: less than 25 words.")
-        return response(False, "Input text must contain at least 25 words.", None)
 
-    try:
-        # Run AI detection
-        result = copyleaks_service.detect_ai(text)
+@app.on_event("startup")
+async def startup_event():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        logger.info("✅ Database initialized successfully")
 
-        # Save to DB
-        db = SessionLocal()
-        record = AIDetection(
-            scan_id=result["scan_id"],
-            ai_score=result["ai_score"],
-            human_score=result["human_score"],
-            text_length=len(text.split())
-        )
-        db.add(record)
-        db.commit()
-        db.close()
 
-        logger.info("AI detection completed successfully.")
+@app.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    logger.info(f"📥 Incoming → {request.method} {request.url}")
+    response = await call_next(request)
+    return response
 
-        return response(True, "AI detection completed.", {
-            "ai_score": result["ai_score"],
-            "human_score": result["human_score"],
-            "scan_id": result["scan_id"]
-        })
+@app.get("/")
+def welcome():
+    return "Welcome to our AI Content Detection APPlication!"
 
-    except Exception as e:
-        logger.error(f"AI detection error: {str(e)}")
-        return response(False, "AI detection failed.", None)
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
