@@ -5,6 +5,8 @@ from app.models.content_log import ContentLog
 from app.core.config import settings
 from app.schemas.content_schema import AIContentData
 from app.core.logger import logger
+from app.ml.text_classifier import classify_text
+
 
 
 def validate_text(clean_text: str):
@@ -137,3 +139,10 @@ async def check_content(text: str, db: AsyncSession):
             "message": str(e),
             "data": None
         }
+        
+        
+async def detect_category(text: str):
+    logger.info("🔍 Classifying text category...")
+    category = classify_text(text)
+    logger.info(f"📌 Classified as: {category}")
+    return category
